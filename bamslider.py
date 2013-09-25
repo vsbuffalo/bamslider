@@ -32,14 +32,6 @@ class BamSlider(object):
         self._samfile = pysam.Samfile(filename, mode)
         self._deque = deque()
         self._type_counts = Counter()
-        
-        # for storing state in iterator
-        self._last_pos = None
-        self._last_tid = -1
-        self._window_starts = None
-        self._wstart = None
-        self._wend = None
-
     
     def __iter__(self):
         """
@@ -56,31 +48,33 @@ class BamSlider(object):
         may less than 10kb wide, leadering to noise.
 
         """
+        last_pos = -1
+        last_tid = None
         for read in self._samfile:
-            new_chromosome = (self._last_pos < 0 and self._last_tid is None) or self._last_tid != read.tid
+            new_chromosome = (last_pos < 0 and last_tid is None) or last_tid != read.tid
             if new_chromosome:
                 # if the deque isn't empty, dump it via yield
                 if len(self._deque):
                     this_window = list(self._deque)
                     self._deque = deque()
-                    yield (Window(self._samfile.references[read.tid], self._wstart, self._wend), this_window)
+                    yield (Window(self._samfile.references[last_tid], wstart, wend), this_window)
 
                 # initialize sequence window for the length of this
                 # chromosome
-                self._window_starts = iter(xrange(0, self._samfile.lengths[read.tid]-self.size, self.step))
-                self._wstart = next(self._window_starts)
-                self._wend = self._wstart + self.size
-                self._last_pos = read.pos
-                self._last_tid = read.tid
+                window_starts = iter(xrange(0, self._samfile.lengths[read.tid]-self.size, self.step))
+                wstart = next(window_starts)
+                wend = wstart + self.size
+                last_pos = read.pos
+                last_tid = read.tid
             
             if read.is_unmapped:
                 self._type_counts["unmapped"] += 1
                 continue
 
             # always check things are sorted
-            if self._last_pos > read.pos:
+            if last_pos > read.pos:
                 raise ValueError, "BAM/SAM file not sorted"
-            self._last_pos = read.pos
+            last_pos = read.pos
 
             # look at where we are, and if we see a read that has a
             # start position that's past this window, yield the
@@ -88,7 +82,7 @@ class BamSlider(object):
             #
             # Note that we can only left pop off the deque up to the
             # start of the next window.
-            while read.pos > self._wend:
+            while read.pos > wend:
                 # keep yielding windows until we hit a read where this
                 # isn't the case.
 
@@ -98,16 +92,16 @@ class BamSlider(object):
                 num_remove = 0
                 for i in xrange(len(self._deque)):
                     dequed_read = self._deque[i]
-                    if dequed_read.pos < self._wstart + self.step:
+                    if dequed_read.pos < wstart + self.step:
                         # remove reads with start positions that are before next start
                         num_remove += 1
                     this_window.append(dequed_read)
                 for i in range(num_remove):
                     self._deque.popleft()
                     
-                last_wstart, last_wend = self._wstart, self._wend
-                self._wstart = next(self._window_starts)
-                self._wend = self._wstart + self.size
+                last_wstart, last_wend = wstart, wend
+                wstart = next(window_starts)
+                wend = wstart + self.size
                 yield (Window(self._samfile.references[read.tid], last_wstart, last_wend), this_window)
 
             # append this read to the end of the deque
